@@ -1,0 +1,1856 @@
+<!DOCTYPE html>
+<html lang="en">
+
+    <script>
+        let stories = [];
+        let currentIndex = 0;
+        let progressInterval = null;
+        let isPaused = false;
+        let pauseStartTime = null;
+        let remainingTime = 10000;
+        let isNavigating = false;  // Prevent duplicate navigation events
+
+        // Load wrapped data with real-time progress updates via Server-Sent Events
+        async function loadWrappedData() {
+            try {
+                console.log('Starting to fetch wrapped data...');
+                
+                // Create EventSource for Server-Sent Events
+                const eventSource = new EventSource('/api/generate-wrapped');
+                
+                eventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('Received:', data);
+                        
+                        if (data.type === 'progress') {
+                            // Update loading message in real-time
+                            const loadingMessage = document.getElementById('loading-message');
+                            if (loadingMessage) {
+                                loadingMessage.textContent = data.message;
+                            }
+                        } else if (data.type === 'complete') {
+                            // Data loading complete
+                            console.log('Complete event received');
+                            console.log('Stories data:', data.stories);
+                            console.log('Number of stories:', data.stories ? data.stories.length : 0);
+                            
+                            const loadingMessage = document.getElementById('loading-message');
+                            if (loadingMessage) {
+                                loadingMessage.textContent = "Your Wrapped is ready! 🎉";
+                            }
+                            
+                            stories = data.stories;
+                            
+                            // Close the connection
+                            eventSource.close();
+                            
+                            // Wait a moment before showing stories
+                            setTimeout(() => {
+                                console.log('Hiding loading screen and showing stories...');
+                                console.log('Stories array has', stories.length, 'items');
+                                
+                                // Completely hide loading screen
+                                const loadingScreen = document.getElementById('loading-screen');
+                                loadingScreen.style.display = 'none';
+                                
+                                // Render stories
+                                renderStories();
+                                showStory(0);
+                            }, 500);
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
+                        }
+                    } catch (parseError) {
+                        console.error('Error parsing event data:', parseError);
+                    }
+                };
+                
+                eventSource.onerror = function(error) {
+                    console.error('EventSource error:', error);
+                    eventSource.close();
+                    
+                    document.getElementById('loading-screen').innerHTML = `
+                        <div class="error-message">
+                            Failed to load your Wrapped data.<br>
+                            Please check your connection and try again.
+                        </div>
+                    `;
+                };
+                
+            } catch (error) {
+                console.error('Error loading wrapped data:', error);
+                document.getElementById('loading-screen').innerHTML = `
+                    <div class="error-message">
+                        Failed to load your Wrapped data.<br>
+                        Error: ${error.message}<br>
+                        Please check the console for details.
+                    </div>
+                `;
+            }
+        }
+
+        function renderStories() {
+            console.log('renderStories called with', stories.length, 'stories');
+            const container = document.getElementById('stories-container');
+            const progressContainer = document.getElementById('progress-container');
+            
+            console.log('Container:', container);
+            console.log('Progress container:', progressContainer);
+            
+            // Create progress bars
+            stories.forEach((_, index) => {
+                const bar = document.createElement('div');
+                bar.className = 'progress-bar';
+                bar.innerHTML = '<div class="progress-fill"></div>';
+                progressContainer.appendChild(bar);
+            });
+            
+            // Create story slides
+            stories.forEach((story, index) => {
+                console.log(`Creating story ${index}:`, story.type, story.title);
+                const storyDiv = document.createElement('div');
+                storyDiv.className = `story-container story-${story.type}`;
+                storyDiv.id = `story-${index}`;
+                storyDiv.setAttribute('data-title', story.title.toLowerCase().replace(/\s+/g, '-'));
+                
+                const content = renderStoryContent(story);
+                console.log(`Story ${index} content length:`, content.length);
+                storyDiv.innerHTML = content;
+                container.appendChild(storyDiv);
+            });
+            
+            console.log('Total story containers created:', container.children.length);
+            
+            // Log first story's HTML for debugging
+            if (container.children.length > 0) {
+                console.log('First story HTML:', container.children[0].innerHTML.substring(0, 200));
+            }
+        }
+
+        function renderStoryContent(story) {
+            switch (story.type) {
+                case 'welcome':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        <div class="story-subtitle">${story.subtitle}</div>
+                        <button class="start-wrapped-btn" onclick="startWrapped()">Start your Wrapped</button>
+                        <div class="attribution">by <a href="https://github.com/ebjaime" target="_blank" rel="noopener noreferrer">@ebjaime</a></div>
+                    `;
+                
+                case 'running_summary':
+                case 'stats':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        ${story.stats.map(stat => stat ? `
+                            <div class="stat-item">
+                                <div class="stat-label">${stat.label}</div>
+                                <div class="stat-value">${stat.value}</div>
+                            </div>
+                        ` : '').join('')}
+                    `;
+                
+                case 'highlight':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        <div class="main-stat">${story.main_stat}</div>
+                        ${story.date ? `<div class="date-label">${story.date}</div>` : ''}
+                        ${story.secondary ? `<div class="secondary-stat">${story.secondary}</div>` : ''}
+                    `;
+                
+                case 'records':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        ${story.records.map(record => `
+                            <div class="record-item">
+                                <div class="record-label">${record.label}</div>
+                                <div class="record-value">
+                                    <div class="record-time">${record.value}</div>
+                                    ${record.subvalue ? `<div class="record-pace">${record.subvalue}/km</div>` : ''}
+                                </div>
+                            </div>
+                        `).join('')}
+                    `;
+                
+                case 'countries':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        <div class="main-stat">${story.main_stat}</div>
+                        <div class="countries-list">
+                            ${story.countries.map((country, index) => `
+                                <div class="country-item" style="animation-delay: ${index * 0.1}s">
+                                    <span class="country-flag">📍</span>
+                                    <span class="country-name">${country}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                
+                case 'monthly_grid':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        <div class="monthly-grid">
+                            ${story.months.map((month, index) => `
+                                <div class="month-cell" style="animation-delay: ${index * 0.05}s">
+                                    <div class="month-header">
+                                        <div class="month-name">${month.name}</div>
+                                        ${month.prs && month.prs.length > 0 ? `
+                                            <div class="pr-stars">
+                                                ${month.prs.map(pr => `<span class="pr-star" title="${pr} PR">⭐${pr}</span>`).join('')}
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                    <div class="month-distance">${month.distance}</div>
+                                    <div class="month-label">km</div>
+                                    <div class="month-details">
+                                        <div class="month-detail-item">
+                                            <span class="detail-icon">🏃</span>
+                                            <span class="detail-value">${month.runs}</span>
+                                        </div>
+                                        <div class="month-detail-item">
+                                            <span class="detail-icon">⚡</span>
+                                            <span class="detail-value">${month.pace}/km</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                
+                case 'ai_text':
+                    // Check if emoji is a custom icon class (no emoji character)
+                    const emojiContent = story.emoji.length <= 20 && !story.emoji.match(/[\u{1F300}-\u{1F9FF}]/u) ? '' : story.emoji;
+                    return `
+                        <div class="story-emoji">${emojiContent}</div>
+                        <div class="story-title">${story.title}</div>
+                        <div class="ai-text-content">${story.text}</div>
+                    `;
+                
+                case 'summary':
+                    return `
+                        <div class="story-emoji">${story.emoji}</div>
+                        <div class="story-title">${story.title}</div>
+                        ${story.summary.map(item => `
+                            <div class="summary-item">✨ ${item}</div>
+                        `).join('')}
+                        <div class="attribution">by <a href="https://github.com/ebjaime" target="_blank" rel="noopener noreferrer">@ebjaime</a></div>
+                    `;
+                
+                default:
+                    return '<div>Unknown story type</div>';
+            }
+        }
+
+        function showStory(index) {
+            console.log('showStory called with index:', index);
+            if (index < 0 || index >= stories.length) {
+                console.log('Index out of bounds');
+                return;
+            }
+            
+            // Clear previous intervals
+            if (progressInterval) {
+                clearInterval(progressInterval);
+            }
+            
+            // Hide all stories
+            document.querySelectorAll('.story-container').forEach(story => {
+                story.classList.remove('active');
+            });
+            
+            // Show current story
+            const storyElement = document.getElementById(`story-${index}`);
+            console.log('Story element:', storyElement);
+            if (storyElement) {
+                storyElement.classList.add('active');
+                console.log('Story element made active');
+                console.log('Story classes:', storyElement.className);
+                console.log('Story display style:', window.getComputedStyle(storyElement).display);
+            } else {
+                console.log('Story element not found!');
+            }
+            
+            // Update progress bars
+            const progressBars = document.querySelectorAll('.progress-bar');
+            progressBars.forEach((bar, i) => {
+                bar.classList.remove('active', 'completed');
+                bar.querySelector('.progress-fill').style.width = '0%';
+                
+                if (i < index) {
+                    bar.classList.add('completed');
+                } else if (i === index) {
+                    bar.classList.add('active');
+                }
+            });
+            
+            currentIndex = index;
+            
+            // Reset pause state
+            isPaused = false;
+            remainingTime = 10000;
+            
+            // Don't auto-advance on welcome story (index 0)
+            if (index !== 0) {
+                // Auto-advance after 10 seconds
+                progressInterval = setTimeout(() => {
+                    nextStory();
+                }, remainingTime);
+            }
+        }
+
+        function pauseStory() {
+            if (!isPaused && progressInterval) {
+                isPaused = true;
+                pauseStartTime = Date.now();
+                clearTimeout(progressInterval);
+                
+                // Pause progress bar animation
+                const progressBars = document.querySelectorAll('.progress-bar');
+                progressBars[currentIndex].querySelector('.progress-fill').style.animationPlayState = 'paused';
+            }
+        }
+
+        function resumeStory() {
+            if (isPaused) {
+                isPaused = false;
+                const pauseDuration = Date.now() - pauseStartTime;
+                remainingTime = Math.max(0, remainingTime - pauseDuration);
+                
+                // Resume progress bar animation
+                const progressBars = document.querySelectorAll('.progress-bar');
+                progressBars[currentIndex].querySelector('.progress-fill').style.animationPlayState = 'running';
+                
+                // Continue with remaining time
+                progressInterval = setTimeout(() => {
+                    nextStory();
+                }, remainingTime);
+            }
+        }
+
+        function startWrapped() {
+            // Start from story 1 (skip welcome)
+            nextStory();
+        }
+
+        function nextStory() {
+            if (currentIndex < stories.length - 1) {
+                showStory(currentIndex + 1);
+            }
+        }
+
+        function previousStory() {
+            // Don't allow going back to welcome screen
+            if (currentIndex > 1) {
+                showStory(currentIndex - 1);
+            }
+        }
+
+        // Initialize event listeners after DOM is loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            // Hold to pause functionality
+            const appContainer = document.getElementById('app-container');
+            let touchStartTime = 0;
+            let touchStartX = 0;
+            
+            // Mouse events
+            appContainer.addEventListener('mousedown', (e) => {
+            touchStartTime = Date.now();
+            pauseStory();
+        });
+        
+        appContainer.addEventListener('mouseup', (e) => {
+            const touchDuration = Date.now() - touchStartTime;
+            resumeStory();
+            
+            // If it was a quick tap (< 200ms), handle navigation
+            if (touchDuration < 200 && !isNavigating) {
+                // Don't allow navigation on welcome screen
+                if (currentIndex === 0) return;
+                
+                isNavigating = true;
+                const rect = appContainer.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const containerWidth = rect.width;
+                
+                if (clickX < containerWidth * 0.3) {
+                    previousStory();
+                } else if (clickX > containerWidth * 0.7) {
+                    nextStory();
+                }
+                
+                // Reset flag after a short delay
+                setTimeout(() => { isNavigating = false; }, 300);
+            }
+        });
+        
+        appContainer.addEventListener('mouseleave', () => {
+            resumeStory();
+        });
+        
+        // Touch events
+        appContainer.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                touchStartTime = Date.now();
+                touchStartX = e.touches[0].clientX;
+                pauseStory();
+            }
+        });
+        
+        appContainer.addEventListener('touchend', (e) => {
+            const touchDuration = Date.now() - touchStartTime;
+            resumeStory();
+            
+            // If it was a quick tap (< 200ms), handle navigation
+            if (touchDuration < 200 && !isNavigating) {
+                // Don't allow navigation on welcome screen
+                if (currentIndex === 0) return;
+                
+                isNavigating = true;
+                const rect = appContainer.getBoundingClientRect();
+                const containerWidth = rect.width;
+                
+                if (touchStartX < containerWidth * 0.3) {
+                    previousStory();
+                } else if (touchStartX > containerWidth * 0.7) {
+                    nextStory();
+                }
+                
+                // Reset flag after a short delay
+                setTimeout(() => { isNavigating = false; }, 300);
+            }
+        });
+        
+            appContainer.addEventListener('touchcancel', () => {
+                resumeStory();
+            });
+            
+            // Keyboard navigation
+            document.addEventListener('keydown', (e) => {
+                // Don't allow keyboard navigation on welcome screen
+                if (currentIndex === 0) return;
+                
+                if (e.key === 'ArrowRight' || e.key === ' ') {
+                    nextStory();
+                } else if (e.key === 'ArrowLeft') {
+                    previousStory();
+                }
+            });
+
+            // Interactive blob mouse tracking
+            const blobs = document.querySelectorAll('.blob');
+            const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+            let mouseX = appContainer.offsetWidth / 2;
+            let mouseY = appContainer.offsetHeight / 2;
+            let blobPositions = [
+                { x: appContainer.offsetWidth * 0.2, y: appContainer.offsetHeight * 0.3 },
+                { x: appContainer.offsetWidth * 0.7, y: appContainer.offsetHeight * 0.6 }
+            ];
+
+            // Random targets for mobile
+            let randomTargets = [
+                { x: mouseX, y: mouseY, time: Date.now() },
+                { x: mouseX, y: mouseY, time: Date.now() }
+            ];
+
+            if (!isTouchDevice) {
+                // Desktop: follow mouse
+                appContainer.addEventListener('mousemove', (e) => {
+                    const rect = appContainer.getBoundingClientRect();
+                    mouseX = e.clientX - rect.left;
+                    mouseY = e.clientY - rect.top;
+                });
+            }
+
+            // Generate random target for mobile
+            function getRandomTarget(index) {
+                const padding = 100;
+                return {
+                    x: padding + Math.random() * (appContainer.offsetWidth - padding * 2),
+                    y: padding + Math.random() * (appContainer.offsetHeight - padding * 2),
+                    time: Date.now()
+                };
+            }
+
+            // Smooth blob movement
+            function animateBlobs() {
+                blobs.forEach((blob, index) => {
+                    let targetX, targetY;
+                    
+                    if (isTouchDevice) {
+                        // Mobile: random slow movement
+                        const now = Date.now();
+                        // Change target every 3-5 seconds
+                        const changeInterval = 3000 + index * 2000;
+                        
+                        if (now - randomTargets[index].time > changeInterval) {
+                            randomTargets[index] = getRandomTarget(index);
+                        }
+                        
+                        targetX = randomTargets[index].x;
+                        targetY = randomTargets[index].y;
+                    } else {
+                        // Desktop: follow mouse
+                        targetX = mouseX;
+                        targetY = mouseY;
+                    }
+                    
+                    const speed = isTouchDevice ? 0.005 + (index * 0.003) : 0.03 + (index * 0.015);
+                    
+                    // Calculate distance to target
+                    const deltaX = targetX - blobPositions[index].x;
+                    const deltaY = targetY - blobPositions[index].y;
+                    
+                    // Update position
+                    blobPositions[index].x += deltaX * speed;
+                    blobPositions[index].y += deltaY * speed;
+                    
+                    // Apply position
+                    blob.style.left = `${blobPositions[index].x - 150}px`;
+                    blob.style.top = `${blobPositions[index].y - 150}px`;
+                });
+                
+                requestAnimationFrame(animateBlobs);
+            }
+            
+            animateBlobs();
+            
+            // Logout button
+            const logoutButton = document.getElementById('logoutButton');
+            if (logoutButton) {
+                logoutButton.addEventListener('click', async () => {
+                    if (confirm('Are you sure you want to log out?')) {
+                        try {
+                            await fetch('/api/logout', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                }
+                            });
+                            window.location.href = '/login';
+                        } catch (error) {
+                            console.error('Logout error:', error);
+                            window.location.href = '/login';
+                        }
+                    }
+                });
+            }
+        });
+
+        // Load data on page load
+        loadWrappedData();
+    </script>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Garmin Wrapped 2025</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        body {
+            font-family: 'Geist Mono', 'SF Mono', 'Roboto Mono', 'Courier New', monospace;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+            font-feature-settings: 'tnum' 1;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        #app-container {
+            width: 100vw;
+            max-width: 480px;
+            height: 100vh;
+            max-height: 852px;
+            position: relative;
+            background: #000;
+            overflow: hidden;
+        }
+
+        .logout-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            width: 44px;
+            height: 44px;
+            background: rgba(30, 30, 30, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+
+        .logout-button:hover {
+            background: rgba(40, 40, 40, 0.8);
+            color: rgba(255, 255, 255, 0.9);
+            border-color: rgba(255, 255, 255, 0.3);
+            transform: scale(1.05);
+        }
+
+        .logout-button:active {
+            transform: scale(0.95);
+        }
+
+        /* Progress bars */
+        .progress-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            gap: 4px;
+            z-index: 100;
+        }
+
+        .progress-bar {
+            flex: 1;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ffffff 0%, #e0e0e0 100%);
+            box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+
+        .progress-bar.active .progress-fill {
+            animation: progress 10s linear forwards;
+        }
+
+        .progress-bar.completed .progress-fill {
+            width: 100%;
+        }
+
+        @keyframes progress {
+            from { width: 0%; }
+            to { width: 100%; }
+        }
+
+        /* Story container */
+        .story-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: none;
+        }
+
+        .story-container.active {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 40px 30px;
+            min-height: 100vh;
+        }
+
+        /* Touch areas for navigation */
+        .touch-area {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 40%;
+            z-index: 50;
+            cursor: pointer;
+        }
+
+        .touch-area.left {
+            left: 0;
+        }
+
+        .touch-area.right {
+            right: 0;
+        }
+
+        /* Loading screen */
+        .loading {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            gap: 20px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Story styles - Chrome/Matte unified design */
+        .story-welcome,
+        .story-running_summary,
+        .story-highlight,
+        .story-stats,
+        .story-records,
+        .story-monthly_grid,
+        .story-summary {
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Metallic overlay effect */
+        .story-container.active::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(255, 255, 255, 0.08) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* Subtle grid pattern */
+        .story-container.active::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* Make sure content is above overlays */
+        .story-container > * {
+            position: relative;
+            z-index: 2;
+        }
+
+        .story-welcome {
+            text-align: center;
+        }
+
+        .story-emoji {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 30px;
+            animation: float 3s ease-in-out infinite;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0 !important;  /* Hide emoji text */
+            color: transparent !important;  /* Make emoji invisible */
+            overflow: hidden;  /* Ensure emoji doesn't show */
+        }
+        
+        /* Hide any emoji content */
+        .story-emoji::first-letter {
+            font-size: 0;
+            color: transparent;
+        }
+
+        .story-emoji::before {
+            content: '';
+            position: absolute;
+            width: 70px;
+            height: 70px;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 70%, transparent 100%);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 50%;
+            z-index: -1;
+            box-shadow: 
+                inset 0 2px 5px rgba(255, 255, 255, 0.05),
+                0 0 20px rgba(255, 255, 255, 0.08);
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            50% { transform: translateY(-10px) rotate(5deg); }
+        }
+
+        /* Icon styles for different story types */
+        /* All icons get proper z-index to appear above background */
+        .story-emoji::after {
+            z-index: 1;
+        }
+        
+        /* Welcome - Star burst */
+        .story-welcome .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 35px;
+            height: 35px;
+            background: linear-gradient(135deg, #ffffff 0%, #d0d0d0 100%);
+            clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+            filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.6));
+        }
+
+        /* Running Summary - Running figure */
+        .story-running_summary .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 38px;
+            height: 42px;
+            background: linear-gradient(135deg, #ffffff 0%, #d0d0d0 100%);
+            clip-path: polygon(30% 0%, 70% 0%, 70% 50%, 100% 50%, 50% 100%, 0% 50%, 30% 50%);
+            filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.6));
+        }
+
+        /* Longest Run - Distance marker */
+        .story-container[data-title="longest-run"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Fastest Pace - Lightning bolt */
+        .story-container[data-title="fastest-pace"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 25px;
+            height: 40px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            clip-path: polygon(65% 0%, 85% 40%, 55% 40%, 75% 100%, 25% 55%, 50% 55%, 35% 0%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Averages - Bar chart */
+        .story-container[data-title="your-averages"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 35px;
+            height: 30px;
+            background: 
+                linear-gradient(#ffffff 0%, #ffffff 100%) 0% 60% / 20% 40% no-repeat,
+                linear-gradient(#ffffff 0%, #ffffff 100%) 40% 30% / 20% 70% no-repeat,
+                linear-gradient(#ffffff 0%, #ffffff 100%) 80% 50% / 20% 50% no-repeat;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Sleep - Moon crescent */
+        .story-container[data-title="sleep"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            border-radius: 50%;
+            box-shadow: inset 10px 0px 0px 0px rgba(0, 0, 0, 0.4);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Heart Rate - Heart pulse */
+        .story-container[data-title="resting-heart-rate"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 32px;
+            height: 28px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            clip-path: polygon(50% 100%, 0% 40%, 0% 25%, 25% 0%, 50% 25%, 75% 0%, 100% 25%, 100% 40%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Stress - Zen circle */
+        .story-container[data-title="stress-level"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 32px;
+            height: 32px;
+            border: 3px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            border-right-color: transparent;
+            transform: rotate(-45deg);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Steps - Footprint */
+        .story-container[data-title="steps"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 28px;
+            height: 35px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            clip-path: polygon(30% 0%, 70% 0%, 80% 20%, 90% 40%, 85% 60%, 75% 80%, 65% 95%, 50% 100%, 35% 95%, 25% 80%, 15% 60%, 10% 40%, 20% 20%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* VO2 Max - Lungs/power */
+        .story-container[data-title="vo2-max"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 35px;
+            height: 30px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            clip-path: polygon(50% 0%, 65% 20%, 100% 30%, 85% 70%, 65% 100%, 35% 100%, 15% 70%, 0% 30%, 35% 20%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Locations/Countries - Map pin marker */
+        .story-countries .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 28px;
+            height: 40px;
+            background: linear-gradient(135deg, #ffffff 0%, #d0d0d0 100%);
+            clip-path: polygon(50% 0%, 75% 15%, 90% 35%, 85% 55%, 75% 70%, 50% 100%, 25% 70%, 15% 55%, 10% 35%, 25% 15%);
+            filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.6));
+        }
+        
+        /* Add inner circle for the pin */
+        .story-countries .story-emoji::before {
+            content: '';
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -70%);
+            z-index: 2;
+            box-shadow: 
+                inset 0 1px 2px rgba(0, 0, 0, 0.2),
+                0 0 8px rgba(255, 255, 255, 0.5);
+        }
+
+        /* Personal Records - Trophy */
+        .story-records .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 35px;
+            height: 35px;
+            background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
+            clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Monthly Grid - Line chart trend */
+        .story-container[data-title="month-by-month"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 38px;
+            height: 28px;
+            background: 
+                linear-gradient(135deg, #ffffff 0%, #ffffff 100%) 0% 100% / 3px 40% no-repeat,
+                linear-gradient(135deg, #ffffff 0%, #ffffff 100%) 25% 70% / 3px 60% no-repeat,
+                linear-gradient(135deg, #ffffff 0%, #ffffff 100%) 50% 50% / 3px 80% no-repeat,
+                linear-gradient(135deg, #ffffff 0%, #ffffff 100%) 75% 30% / 3px 100% no-repeat;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        .story-container[data-title="month-by-month"] .story-emoji::before {
+            content: '';
+            position: absolute;
+            width: 38px;
+            height: 2px;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(90deg, 
+                transparent 0%, 
+                #ffffff 2%, 
+                #ffffff 23%, 
+                transparent 25%,
+                transparent 27%,
+                #ffffff 29%,
+                #ffffff 48%,
+                transparent 50%,
+                transparent 52%,
+                #ffffff 54%,
+                #ffffff 73%,
+                transparent 75%,
+                transparent 77%,
+                #ffffff 79%,
+                #ffffff 98%,
+                transparent 100%
+            );
+        }
+
+        /* AI Insights - Target icon */
+        .story-container[data-title="your-year-insights"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 38px;
+            height: 38px;
+            border: 3px solid #ffffff;
+            border-radius: 50%;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        .story-container[data-title="your-year-insights"] .story-emoji::before {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #ffffff;
+            border-radius: 50%;
+            box-shadow: inset 0 0 0 4px #ffffff;
+        }
+
+        /* AI Forecast - Arrow right icon */
+        .story-container[data-title="2026-goals"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 28px;
+            height: 3px;
+            background: #ffffff;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        .story-container[data-title="2026-goals"] .story-emoji::before {
+            content: '';
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            border-right: 3px solid #ffffff;
+            border-top: 3px solid #ffffff;
+            transform: rotate(45deg) translate(-4px, 6px);
+            right: 11px;
+        }
+
+        /* Summary - Check circle */
+        .story-summary .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 35px;
+            height: 35px;
+            border: 3px solid #ffffff;
+            border-radius: 50%;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        .story-summary .story-emoji::before {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 10px;
+            border-left: 3px solid #ffffff;
+            border-bottom: 3px solid #ffffff;
+            transform: rotate(-45deg) translate(-2px, -8px);
+            z-index: 3;
+            filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.5));
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        .story-title {
+            font-family: 'Major Mono Display', monospace;
+            font-size: 42px;
+            font-weight: 400;
+            background: linear-gradient(135deg, #ffffff 0%, #c0c0c0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 15px;
+            text-shadow: 0 4px 20px rgba(255, 255, 255, 0.2);
+            letter-spacing: 0px;
+            line-height: 1.2;
+            text-transform: uppercase;
+        }
+
+        .story-subtitle {
+            font-family: 'Major Mono Display', monospace;
+            font-size: 22px;
+            font-weight: 400;
+            background: linear-gradient(135deg, #e0e0e0 0%, #a0a0a0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 0px;
+            line-height: 1.3;
+        }
+
+        .attribution {
+            position: absolute;
+            bottom: 120px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: 'Geist Mono', monospace;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.4);
+            text-align: center;
+            z-index: 10;
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+
+        .attribution a {
+            color: rgba(255, 255, 255, 0.6);
+            text-decoration: none;
+            transition: color 0.3s ease;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .attribution a:hover {
+            color: rgba(255, 255, 255, 0.9);
+            border-bottom-color: rgba(255, 255, 255, 0.6);
+        }
+
+        /* Start Wrapped Button */
+        .start-wrapped-btn {
+            margin-top: 40px;
+            padding: 18px 45px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 18px;
+            font-weight: 600;
+            color: #ffffff;
+            background: linear-gradient(135deg, #0077be 0%, #005a92 100%);
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 
+                0 4px 15px rgba(0, 119, 190, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            animation: fadeInUp 0.8s ease-out 0.5s backwards, pulse 2s ease-in-out 2s infinite;
+        }
+
+        .start-wrapped-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 
+                0 6px 25px rgba(0, 119, 190, 0.6),
+                inset 0 1px 0 rgba(255, 255, 255, 0.3);
+            background: linear-gradient(135deg, #0088d4 0%, #0066a8 100%);
+        }
+
+        .start-wrapped-btn:active {
+            transform: translateY(0px);
+            box-shadow: 
+                0 2px 10px rgba(0, 119, 190, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                box-shadow: 
+                    0 4px 15px rgba(0, 119, 190, 0.4),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+            }
+            50% {
+                box-shadow: 
+                    0 4px 25px rgba(0, 119, 190, 0.7),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+            }
+        }
+
+        .stat-item {
+            width: 100%;
+            margin: 15px 0;
+            text-align: center;
+            animation: fadeInUp 0.6s ease-out backwards;
+        }
+
+        .stat-item:nth-child(1) { animation-delay: 0.1s; }
+        .stat-item:nth-child(2) { animation-delay: 0.2s; }
+        .stat-item:nth-child(3) { animation-delay: 0.3s; }
+        .stat-item:nth-child(4) { animation-delay: 0.4s; }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .stat-label {
+            font-family: 'Geist Mono', monospace;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+            font-weight: 400;
+        }
+
+        .stat-value {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 44px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            filter: drop-shadow(0 2px 8px rgba(255, 255, 255, 0.2));
+            letter-spacing: -1.5px;
+            line-height: 1;
+        }
+
+        .main-stat {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 68px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #c0c0c0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin: 20px 0;
+            filter: drop-shadow(0 4px 15px rgba(255, 255, 255, 0.3));
+            letter-spacing: -3px;
+            line-height: 1;
+        }
+
+        .secondary-stat {
+            font-family: 'Geist Mono', monospace;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-top: 10px;
+            font-weight: 400;
+        }
+
+        .date-label {
+            font-family: 'Geist Mono', monospace;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.4);
+            margin-top: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        .record-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            padding: 20px 25px;
+            margin: 10px 0;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            animation: fadeInUp 0.6s ease-out backwards;
+            box-shadow: 
+                inset 0 1px 0 rgba(255, 255, 255, 0.1),
+                0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .record-label {
+            font-family: 'Geist Mono', monospace;
+            font-size: 13px;
+            font-weight: 400;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        .record-value {
+            text-align: right;
+        }
+
+        .record-time {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 26px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -1px;
+            line-height: 1;
+        }
+
+        .record-pace {
+            font-family: 'Geist Mono', monospace;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+            margin-top: 4px;
+            letter-spacing: 0.5px;
+            font-weight: 400;
+        }
+
+        /* Countries List Styles */
+        .countries-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+            margin-top: 30px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .country-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            animation: fadeInUp 0.6s ease-out backwards;
+            transition: all 0.3s ease;
+        }
+
+        .country-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transform: translateX(5px);
+        }
+
+        .country-flag {
+            font-size: 24px;
+            flex-shrink: 0;
+        }
+
+        .country-name {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 16px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            letter-spacing: 0.5px;
+        }
+
+        /* Monthly Grid Styles */
+        .monthly-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: 12px;
+            width: 100%;
+            max-width: 550px;
+            margin: 0 auto;
+            padding: 20px 0;
+            max-height: 70vh;  /* Limit height on small screens */
+            overflow-y: auto;  /* Make scrollable */
+            overflow-x: hidden;
+        }
+
+        .month-cell {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            animation: fadeInUp 0.4s ease-out backwards;
+            transition: all 0.3s ease;
+            box-shadow: 
+                inset 0 1px 0 rgba(255, 255, 255, 0.1),
+                0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .month-cell:hover {
+            transform: translateY(-2px);
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+            box-shadow: 
+                inset 0 1px 0 rgba(255, 255, 255, 0.15),
+                0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .month-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            width: 100%;
+            margin-bottom: 8px;
+        }
+
+        .month-name {
+            font-family: 'Geist Mono', monospace;
+            font-size: 11px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.6);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .pr-stars {
+            display: flex;
+            gap: 2px;
+        }
+
+        .pr-star {
+            font-size: 8px;
+            background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+            filter: drop-shadow(0 0 3px rgba(255, 215, 0, 0.5));
+        }
+
+        .month-distance {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.5px;
+            line-height: 1.2;
+            margin-bottom: 2px;
+        }
+
+        .month-label {
+            font-family: 'Geist Mono', monospace;
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.4);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .month-details {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+            justify-content: center;
+        }
+
+        .month-detail-item {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .detail-icon {
+            font-size: 10px;
+            opacity: 0.7;
+        }
+
+        .detail-value {
+            font-family: 'Geist Mono', monospace;
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .ai-text-content {
+            font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 15px;
+            line-height: 1.7;
+            color: rgba(255, 255, 255, 0.85);
+            padding: 20px;
+            margin: 20px 0;
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            animation: fadeInUp 0.6s ease-out backwards;
+            text-align: left;
+            max-height: 60vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .ai-text-content strong {
+            color: rgba(255, 255, 255, 1);
+            font-weight: 600;
+            background: linear-gradient(135deg, #ffffff 0%, #e0e0e0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .ai-text-content br {
+            display: block;
+            content: "";
+            margin-top: 8px;
+        }
+
+        .summary-item {
+            font-family: 'Geist Mono', monospace;
+            font-size: 18px;
+            color: rgba(255, 255, 255, 0.8);
+            margin: 15px 0;
+            font-weight: 400;
+            animation: fadeInUp 0.6s ease-out backwards;
+            letter-spacing: 0.5px;
+        }
+
+        .summary-item:nth-child(1) { animation-delay: 0.2s; }
+        .summary-item:nth-child(2) { animation-delay: 0.4s; }
+        .summary-item:nth-child(3) { animation-delay: 0.6s; }
+
+        .error-message {
+            color: #ff6b6b;
+            font-size: 18px;
+            text-align: center;
+            padding: 20px;
+        }
+
+        /* Interactive blob background */
+        .blob-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .blob {
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.12) 40%, rgba(255, 255, 255, 0.03) 70%);
+            border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+            filter: blur(60px);
+            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            animation: morphBlob 8s ease-in-out infinite;
+            mix-blend-mode: screen;
+        }
+
+        .blob-1 {
+            top: 20%;
+            left: 10%;
+            animation-delay: 0s;
+        }
+
+        .blob-2 {
+            top: 60%;
+            right: 10%;
+            animation-delay: 2s;
+            animation-duration: 10s;
+        }
+
+        .header-logo {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            overflow: visible;
+            max-width: 180px;
+            width: auto;
+        }
+
+        .header-logo img {
+            height: 22px;
+            width: auto;
+            max-width: 100%;
+            object-fit: contain;
+            object-position: left center;
+        }
+
+        .logout-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            width: 44px;
+            height: 44px;
+            background: rgba(30, 30, 30, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+
+        .logout-button:hover {
+            background: rgba(40, 40, 40, 0.8);
+            color: rgba(255, 255, 255, 0.9);
+            border-color: rgba(255, 255, 255, 0.3);
+            transform: scale(1.05);
+        }
+
+        .logout-button:active {
+            transform: scale(0.95);
+        }
+
+        @keyframes morphBlob {
+            0%, 100% {
+                border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+                transform: rotate(0deg) scale(1);
+            }
+            25% {
+                border-radius: 60% 40% 50% 70% / 60% 30% 70% 40%;
+                transform: rotate(90deg) scale(1.1);
+            }
+            50% {
+                border-radius: 50% 60% 40% 60% / 50% 60% 40% 60%;
+                transform: rotate(180deg) scale(0.9);
+            }
+            75% {
+                border-radius: 60% 50% 60% 40% / 40% 60% 50% 60%;
+                transform: rotate(270deg) scale(1.05);
+            }
+        }
+
+        /* Responsive Design for Small Screens (iPhone SE, etc.) */
+        @media (max-width: 400px), (max-height: 700px) {
+            .story-emoji {
+                font-size: 0 !important;  /* Keep emoji hidden */
+                margin-bottom: 20px !important;
+                width: 60px !important;
+                height: 60px !important;
+            }
+
+            .story-title {
+                font-size: 28px !important;
+                margin-bottom: 20px !important;
+            }
+
+            .story-subtitle {
+                font-size: 16px !important;
+            }
+
+            .main-stat {
+                font-size: 48px !important;
+                margin: 20px 0 !important;
+            }
+
+            .secondary-stat {
+                font-size: 14px !important;
+                margin-top: 15px !important;
+            }
+
+            .date-label {
+                font-size: 11px !important;
+                margin-top: 8px !important;
+            }
+
+            .stat-item {
+                padding: 15px 20px !important;
+                margin: 8px 0 !important;
+            }
+
+            .stat-label {
+                font-size: 11px !important;
+            }
+
+            .stat-value {
+                font-size: 22px !important;
+            }
+
+            .start-wrapped-btn {
+                padding: 14px 35px !important;
+                font-size: 16px !important;
+                margin-top: 25px !important;
+            }
+
+            .attribution {
+                bottom: 90px !important;
+                font-size: 10px !important;
+                padding-bottom: max(env(safe-area-inset-bottom), 30px) !important;
+            }
+
+            .record-item {
+                padding: 15px 18px !important;
+                margin: 8px 0 !important;
+            }
+
+            .record-label {
+                font-size: 11px !important;
+            }
+
+            .record-time {
+                font-size: 22px !important;
+            }
+
+            .record-pace {
+                font-size: 10px !important;
+            }
+
+            .monthly-grid {
+                grid-template-columns: repeat(3, 1fr) !important;
+                grid-template-rows: repeat(4, 1fr) !important;
+                gap: 8px !important;
+                padding: 15px !important;
+                max-height: 50vh !important;  /* Shorter on mobile */
+                overflow-y: auto !important;
+                overflow-x: hidden !important;
+                -webkit-overflow-scrolling: touch;  /* Smooth scrolling on iOS */
+            }
+
+            .month-cell {
+                padding: 10px 6px !important;
+                min-width: 0 !important;
+            }
+
+            .month-name {
+                font-size: 10px !important;
+            }
+
+            .month-distance {
+                font-size: 22px !important;
+            }
+
+            .month-label {
+                font-size: 9px !important;
+            }
+
+            .month-detail-item {
+                font-size: 10px !important;
+            }
+
+            .countries-list {
+                max-height: 300px !important;
+                padding: 5px !important;
+                gap: 8px !important;
+            }
+
+            .country-item {
+                padding: 12px 15px !important;
+            }
+
+            .country-flag {
+                font-size: 20px !important;
+            }
+
+            .country-name {
+                font-size: 14px !important;
+            }
+
+            .ai-text-content {
+                font-size: 14px !important;
+                padding: 15px 20px !important;
+                line-height: 1.6 !important;
+                max-height: 50vh !important;
+                overflow-y: auto !important;
+                margin: 15px 10px !important;
+            }
+
+            .summary-item {
+                font-size: 15px !important;
+                margin: 12px 0 !important;
+            }
+
+            .header-logo {
+                top: 12px !important;
+                left: 12px !important;
+                max-width: 120px !important;
+                overflow: visible !important;
+            }
+            
+            .header-logo img {
+                height: 18px !important;
+                width: auto !important;
+                max-width: 100% !important;
+            }
+
+            .logout-button {
+                top: 15px !important;
+                right: 15px !important;
+                width: 36px !important;
+                height: 36px !important;
+            }
+
+            .progress-container {
+                top: 65px !important;
+                padding: 0 15px !important;
+            }
+
+            .progress-bar {
+                height: 2px !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app-container">
+        <!-- Logo -->
+        <div class="header-logo">
+            <img src="{{ url_for('static', filename='logo_big.png') }}" alt="Garmin Unlocked">
+        </div>
+
+        <!-- Logout button -->
+        <button id="logoutButton" class="logout-button" title="Logout">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+        </button>
+
+        <!-- Interactive blob background -->
+        <div class="blob-container">
+            <div class="blob blob-1"></div>
+            <div class="blob blob-2"></div>
+        </div>
+
+        <!-- Progress bars -->
+        <div class="progress-container" id="progress-container"></div>
+
+        <!-- Loading screen -->
+        <div class="story-container active loading" id="loading-screen">
+            <div class="spinner"></div>
+            <div id="loading-message" style="color: white; font-size: 20px; text-align: center; padding: 0 20px;">Connecting to Garmin...</div>
+        </div>
+
+        <!-- Stories will be inserted here -->
+        <div id="stories-container"></div>
+    </div>
+
+</body>
+</html>
