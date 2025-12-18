@@ -59,7 +59,7 @@ class GarminWrapped:
         Args:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
-            activity_type: Type of activity (default: running)
+            activity_type: Type of activity (default: running, or 'others' for everything else)
             
         Returns:
             List of activity dictionaries
@@ -73,12 +73,47 @@ class GarminWrapped:
             
             # Filter by activity type
             filtered_activities = []
-            for activity in activities:
-                activity_type_name = activity.get('activityType', {}).get('typeKey', '')
-                if activity_type.lower() in activity_type_name.lower():
-                    filtered_activities.append(activity)
+            
+            if activity_type.lower() == 'others':
+                # For 'others', include everything that's NOT running, cycling, or swimming
+                for activity in activities:
+                    activity_type_name = activity.get('activityType', {}).get('typeKey', '').lower()
+                    is_running = 'running' in activity_type_name or 'run' in activity_type_name
+                    is_cycling = 'cycling' in activity_type_name or 'biking' in activity_type_name or 'bike' in activity_type_name
+                    is_swimming = 'swimming' in activity_type_name or 'swim' in activity_type_name
+                    
+                    if not is_running and not is_cycling and not is_swimming:
+                        filtered_activities.append(activity)
+            else:
+                # Normal filtering - match activity type with improved specificity
+                for activity in activities:
+                    activity_type_name = activity.get('activityType', {}).get('typeKey', '').lower()
+                    
+                    # Special handling for cycling to be more specific
+                    if activity_type.lower() == 'cycling':
+                        is_cycling = ('cycling' in activity_type_name or 
+                                     'biking' in activity_type_name or 
+                                     'bike' in activity_type_name or
+                                     'mountain_biking' in activity_type_name or
+                                     'road_biking' in activity_type_name or
+                                     'gravel_cycling' in activity_type_name)
+                        if is_cycling:
+                            filtered_activities.append(activity)
+                    # Special handling for swimming
+                    elif activity_type.lower() == 'swimming':
+                        is_swimming = ('swimming' in activity_type_name or 
+                                      'swim' in activity_type_name or
+                                      'lap_swimming' in activity_type_name or
+                                      'open_water_swimming' in activity_type_name)
+                        if is_swimming:
+                            filtered_activities.append(activity)
+                    # Default matching for other types like running
+                    elif activity_type.lower() in activity_type_name:
+                        filtered_activities.append(activity)
             
             print(f"✓ Found {len(filtered_activities)} {activity_type} activities")
+            if len(filtered_activities) > 0:
+                print(f"  Sample activity types found: {[a.get('activityType', {}).get('typeKey', '') for a in filtered_activities[:3]]}")
             return filtered_activities
             
         except Exception as e:
@@ -647,6 +682,8 @@ class GarminWrapped:
         calories = []
         avg_hrs = []
         countries = set()  # Track unique countries
+        activity_types = []  # Track activity types for "others"
+        activities_with_data = []  # Store activities with their processed data
         
         for activity in activities:
             distance = activity.get('distance', 0)
@@ -655,6 +692,10 @@ class GarminWrapped:
             date = activity.get('startTimeLocal', '')
             calorie = activity.get('calories', 0)
             avg_hr = activity.get('averageHR', 0)
+            activity_type = activity.get('activityType', {}).get('typeKey', 'Unknown')
+            
+            # Track activity types
+            activity_types.append(activity_type)
             
             # Extract country from location name if available
             location_name = activity.get('locationName', '')
@@ -677,6 +718,14 @@ class GarminWrapped:
                 
                 pace = (duration / 60) / (distance / 1000)
                 paces.append(pace)
+                
+                # Store activity with its data for finding longest by time
+                activities_with_data.append({
+                    'distance': distance,
+                    'duration': duration,
+                    'date': date,
+                    'type': activity_type
+                })
         
         insights = {
             "total_runs": len(activities),
@@ -690,6 +739,15 @@ class GarminWrapped:
                 "date": dates[distances.index(max(distances))] if distances else None,
                 "duration_minutes": round(durations[distances.index(max(distances))] / 60, 2) if distances else 0
             },
+            
+            "longest_by_time": {
+                "duration_minutes": round(max(durations) / 60, 2) if durations else 0,
+                "date": dates[durations.index(max(durations))] if durations else None,
+                "distance_km": round(distances[durations.index(max(durations))] / 1000, 2) if durations else 0,
+                "activity_type": activities_with_data[durations.index(max(durations))]['type'] if activities_with_data and durations else 'Unknown'
+            },
+            
+            "most_common_activity_type": max(set(activity_types), key=activity_types.count) if activity_types else 'Unknown',
             
             "fastest_pace": {
                 "pace_min_km": round(min(paces), 2) if paces else 0,
@@ -874,17 +932,21 @@ class GarminWrapped:
         
         return monthly
     
-    def generate_wrapped_2025(self, progress_callback=None) -> Dict:
+    def generate_wrapped_2025(self, progress_callback=None, activity_types=None) -> Dict:
         """
         Generate comprehensive Wrapped insights for 2025.
         Uses parallel data fetching to significantly reduce load time.
         
         Args:
             progress_callback: Optional generator function to yield progress updates
+            activity_types: List of activity types to fetch (default: ['running'])
         
         Returns:
             Dictionary with 2025 insights including activities, sleep, stress, and more
         """
+        if activity_types is None:
+            activity_types = ['running']
+            
         def update_progress(message):
             print(f"🔄 {message}")
             if progress_callback:
@@ -897,7 +959,6 @@ class GarminWrapped:
         
         # Define all data fetching tasks
         tasks = {
-            'activities': lambda: self.get_activities("2025-01-01", "2025-12-31", "running"),
             'sleep_data': lambda: self.get_sleep_data("2025-01-01", "2025-12-31"),
             'stress_data': lambda: self.get_stress_data("2025-01-01", "2025-12-31"),
             'hr_data': lambda: self.get_heart_rate_data("2025-01-01", "2025-12-31"),
@@ -907,6 +968,10 @@ class GarminWrapped:
             'training_data': lambda: self.get_training_status_data("2025-01-01", "2025-12-31"),
             'all_time_prs': lambda: self.get_all_time_personal_records()
         }
+        
+        # Add activity fetching tasks for each selected type
+        for activity_type in activity_types:
+            tasks[f'activities_{activity_type}'] = lambda at=activity_type: self.get_activities("2025-01-01", "2025-12-31", at)
         
         results = {}
         completed = 0
@@ -931,8 +996,30 @@ class GarminWrapped:
         
         # Calculate insights
         update_progress("Crunching the numbers...")
+        
+        # Calculate insights for each activity type separately
+        activities_by_type = {}
+        for activity_type in activity_types:
+            activities_key = f'activities_{activity_type}'
+            if activities_key in results and results[activities_key]:
+                activities_by_type[activity_type] = self.calculate_activity_insights(results[activities_key])
+        
+        # For running, use the running-specific data, otherwise combine all
+        if 'running' in activities_by_type:
+            main_activities = activities_by_type['running']
+        else:
+            # If no running, combine all activities
+            all_activities = []
+            for activity_type in activity_types:
+                activities_key = f'activities_{activity_type}'
+                if activities_key in results:
+                    all_activities.extend(results[activities_key])
+            main_activities = self.calculate_activity_insights(all_activities) if all_activities else {}
+        
         wrapped = {
-            "activities": self.calculate_activity_insights(results['activities']),
+            "activities": main_activities,  # Main story uses running or combined
+            "activities_by_type": activities_by_type,  # Separate insights per activity type
+            "activity_types": activity_types,  # Store which types were included
             "sleep": self.calculate_sleep_insights(results['sleep_data']),
             "stress": self.calculate_stress_insights(results['stress_data']),
             "heart_rate": self.calculate_hr_insights(results['hr_data']),

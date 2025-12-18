@@ -234,11 +234,85 @@ def api_login():
             return jsonify({"error": "Wrong password"}), 401
         return jsonify({"error": f"Login failed: {str(e)}"}), 401
 
+@app.route('/api/check-activities', methods=['GET'])
+def check_activities():
+    """Check what activity types the user has in their Garmin data."""
+    email = session.get('email')
+    password = session.get('password')
+    
+    if not email or not password:
+        return jsonify({"error": "Not logged in"}), 401
+    
+    try:
+        # Quick check to see what activities exist
+        garmin = GarminWrapped(email, password)
+        if not garmin.authenticate():
+            return jsonify({"error": "Authentication failed"}), 401
+        
+        # Get all activities for 2025
+        all_activities = garmin.client.get_activities_by_date("2025-01-01", "2025-12-31")
+        
+        # Count activity types
+        activity_counts = {}
+        for activity in all_activities:
+            activity_type_key = activity.get('activityType', {}).get('typeKey', '').lower()
+            
+            # Map to our categories
+            if 'running' in activity_type_key or 'run' in activity_type_key:
+                activity_counts['running'] = activity_counts.get('running', 0) + 1
+            elif 'cycling' in activity_type_key or 'biking' in activity_type_key or 'bike' in activity_type_key:
+                activity_counts['cycling'] = activity_counts.get('cycling', 0) + 1
+            elif 'swimming' in activity_type_key or 'swim' in activity_type_key:
+                activity_counts['swimming'] = activity_counts.get('swimming', 0) + 1
+            else:
+                activity_counts['others'] = activity_counts.get('others', 0) + 1
+        
+        return jsonify({"available_activities": activity_counts}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
     """Handle logout request."""
     session.clear()
     return jsonify({"success": True, "message": "Logged out successfully"}), 200
+
+@app.route('/api/format-stories', methods=['GET'])
+def format_stories_endpoint():
+    """Format stories using cached data with user's selected unit and activities."""
+    email = session.get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+    
+    # Get user preferences from query parameters
+    unit = request.args.get('unit', 'km')
+    activities_param = request.args.get('activities', '["running"]')
+    
+    try:
+        selected_activities = json.loads(activities_param)
+    except:
+        selected_activities = ['running']
+    
+    print(f"\n=== FORMAT STORIES ENDPOINT ===")
+    print(f"Received unit: {unit}")
+    print(f"Received activities param: {activities_param}")
+    print(f"Parsed activities: {selected_activities}")
+    
+    # Load cached wrapped data
+    wrapped_data = load_wrapped_data(email)
+    
+    if not wrapped_data:
+        return jsonify({"error": "No cached data available. Please refresh the page."}), 404
+    
+    # Format stories with user's preferences
+    stories = format_stories(wrapped_data, email, unit, selected_activities)
+    
+    print(f"Generated {len(stories)} stories")
+    story_titles = [s.get('title', 'NO_TITLE') for s in stories]
+    print(f"Story titles: {story_titles}")
+    print("=== END FORMAT STORIES ===\n")
+    
+    return jsonify({"stories": stories}), 200
 
 @app.route('/api/generate-wrapped', methods=['GET'])
 def generate_wrapped():
@@ -252,6 +326,36 @@ def generate_wrapped():
     email = session.get('email')
     password = session.get('password')
     
+    # Get user preferences from query parameters
+    unit = request.args.get('unit', 'km')
+    activities_param = request.args.get('activities', '["running"]')
+    
+    try:
+        selected_activities = json.loads(activities_param)
+    except:
+        selected_activities = ['running']
+    
+    print(f"DEBUG: Received unit: {unit}, activities: {selected_activities}")
+    
+    # Check if preferences changed from cached version
+    cached_data = load_wrapped_data(email)
+    if cached_data:
+        # If activity_types is missing, this is old cache format - regenerate
+        if 'activity_types' not in cached_data:
+            print(f"DEBUG: Old cache format detected (missing activity_types), clearing cache")
+            delete_from_storage(email)
+            cached_data = None
+        else:
+            cached_activities = cached_data.get('activity_types', ['running'])
+            if set(selected_activities) != set(cached_activities):
+                print(f"DEBUG: Activity preferences changed from {cached_activities} to {selected_activities}, clearing cache")
+                delete_from_storage(email)
+                cached_data = None
+    
+    # Store preferences in session for later use
+    session['unit'] = unit
+    session['selected_activities'] = selected_activities
+    
     if not email or not password:
         return Response(
             f"data: {json.dumps({'type': 'error', 'message': 'Not logged in'})}\n\n",
@@ -261,8 +365,11 @@ def generate_wrapped():
     def generate():
         global wrapped_data
         
-        # Capture email from outer scope
+        # Use values from outer scope (already captured from session/request)
         user_email = email
+        user_password = password
+        user_unit = unit
+        user_activities = selected_activities
         
         # Create a queue to communicate between threads
         message_queue = queue.Queue()
@@ -273,11 +380,11 @@ def generate_wrapped():
         
         def run_wrapped_generation():
             try:
-                # Use credentials passed from main thread
+                # Use values captured from outer scope
                 
                 # Try to load cached data first
                 print("Thread: Checking for cached data...")
-                cached_data = load_wrapped_data(email)
+                cached_data = load_wrapped_data(user_email)
                 
                 if cached_data:
                     print("Thread: Using cached data")
@@ -288,18 +395,24 @@ def generate_wrapped():
                 print("Thread: No cache found, starting Garmin initialization...")
                 # Initialize Garmin
                 garmin = GarminWrapped(
-                    email=email,
-                    password=password
+                    email=user_email,
+                    password=user_password
                 )
                 
                 print("Thread: Calling generate_wrapped_2025...")
                 # Generate with progress callback
                 global wrapped_data
-                wrapped_data = garmin.generate_wrapped_2025(progress_callback=progress_callback)
+                
+                print(f"Thread: Fetching activities: {user_activities}")
+                
+                wrapped_data = garmin.generate_wrapped_2025(
+                    progress_callback=progress_callback,
+                    activity_types=user_activities
+                )
                 
                 # Save the generated data
                 print("Thread: Saving wrapped data to file...")
-                save_wrapped_data(email, wrapped_data)
+                save_wrapped_data(user_email, wrapped_data)
                 
                 print("Thread: Generation complete, sending COMPLETE signal")
                 # Signal completion
@@ -346,11 +459,15 @@ def generate_wrapped():
                 yield f"data: {json.dumps({'type': 'error', 'message': wrapped_data['error']})}\n\n"
                 return
             
-            # Format data for stories
-            stories = format_stories(wrapped_data, user_email)
+            # Format data for stories (pass preferences captured earlier)
+            print(f"DEBUG format_stories: activity_types={user_activities}")
+            print(f"DEBUG format_stories: activities_by_type keys={list(wrapped_data.get('activities_by_type', {}).keys())}")
+            if 'cycling' in wrapped_data.get('activities_by_type', {}):
+                print(f"DEBUG format_stories: cycling data exists with {wrapped_data['activities_by_type']['cycling'].get('total_runs', 0)} activities")
+            stories = format_stories(wrapped_data, user_email, user_unit, user_activities)
             
-            # Send completion with data
-            yield f"data: {json.dumps({'type': 'complete', 'stories': stories})}\n\n"
+            # Send completion with data and wrapped_data for activity checking
+            yield f"data: {json.dumps({'type': 'complete', 'stories': stories, 'wrapped_data': wrapped_data})}\n\n"
             
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -366,7 +483,9 @@ def get_wrapped_data():
         return jsonify({"error": "No data available"}), 404
     
     email = session.get('email')
-    stories = format_stories(wrapped_data, email)
+    unit = session.get('unit', 'km')
+    activity_types = session.get('selected_activities', ['running'])
+    stories = format_stories(wrapped_data, email, unit, activity_types)
     return jsonify(stories)
 
 @app.route('/api/clear-cache', methods=['POST'])
@@ -391,28 +510,62 @@ def clear_cache():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-def format_stories(wrapped, email=None):
-    """Format wrapped data into story slides."""
+def format_stories(wrapped, email=None, unit='km', activity_types=None):
+    """Format wrapped data into story slides.
+    
+    Args:
+        wrapped: The wrapped data dictionary
+        email: User email for caching insights
+        unit: Distance unit preference ('km' or 'miles')
+        activity_types: List of selected activity types
+    """
     stories = []
     
-    # Story 1: Welcome
-    stories.append({
-        "type": "welcome",
-        "title": "Your 2025",
-        "subtitle": "Garmin Wrapped",
-        "emoji": "🎉"
-    })
+    # Set defaults
+    if activity_types is None:
+        activity_types = wrapped.get('activity_types', ['running'])
     
-    # Story 2: Running Summary
+    unit_label = 'mi' if unit == 'miles' else 'km'
+    
+    def convert_distance(km):
+        """Convert distance based on unit preference."""
+        if unit == 'miles':
+            return km * 0.621371
+        return km
+    
+    def convert_pace(pace_min_km):
+        """Convert pace from min/km to min/mile if needed.
+        
+        Args:
+            pace_min_km: Pace in minutes per kilometer (float)
+            
+        Returns:
+            Formatted pace string (e.g., "5:30")
+        """
+        if unit == 'miles':
+            # Convert min/km to min/mile: multiply by 1.60934
+            pace_min_mile = pace_min_km * 1.60934
+            minutes = int(pace_min_mile)
+            seconds = int((pace_min_mile - minutes) * 60)
+            return f"{minutes}:{seconds:02d}"
+        else:
+            # Already in min/km, just format
+            minutes = int(pace_min_km)
+            seconds = int((pace_min_km - minutes) * 60)
+            return f"{minutes}:{seconds:02d}"
+    
+    # Story 1: Running Summary (main activity is always running-focused)
     if wrapped.get("activities"):
         activities = wrapped["activities"]
+        total_distance = convert_distance(activities.get('total_distance_km', 0))
+        
         stories.append({
             "type": "running_summary",
             "title": "Running",
             "emoji": "🏃",
             "stats": [
                 {"label": "Total Runs", "value": activities.get('total_runs', 0)},
-                {"label": "Distance", "value": f"{activities.get('total_distance_km', 0):.2f} km"},
+                {"label": "Distance", "value": f"{total_distance:.2f} {unit_label}"},
                 {"label": "Time", "value": f"{activities.get('total_time_hours', 0):.2f} hours"},
                 {"label": "Calories", "value": f"{activities.get('total_calories', 0):,}"}
             ]
@@ -421,11 +574,12 @@ def format_stories(wrapped, email=None):
         # Story 3: Longest Run
         if activities.get('longest_run'):
             longest = activities['longest_run']
+            longest_distance = convert_distance(longest['distance_km'])
             stories.append({
                 "type": "highlight",
                 "title": "Longest Run",
                 "emoji": "🏆",
-                "main_stat": f"{longest['distance_km']:.2f} km",
+                "main_stat": f"{longest_distance:.2f} {unit_label}",
                 "date": longest.get('date', '').split('T')[0] if longest.get('date') else '',
                 "secondary": f"{longest['duration_minutes']:.0f} minutes"
             })
@@ -468,11 +622,15 @@ def format_stories(wrapped, email=None):
                 month_key = f"2025-{i:02d}"
                 if month_key in monthly_stats:
                     stat = monthly_stats[month_key]
+                    month_distance = convert_distance(stat['total_distance_km'])
+                    # Convert pace if needed
+                    pace_min_km = stat.get('avg_pace_min_km', 0)
+                    pace_formatted = convert_pace(pace_min_km) if pace_min_km > 0 else '0:00'
                     months_data.append({
                         "name": month_names[i-1],
-                        "distance": f"{stat['total_distance_km']:.0f}",
+                        "distance": f"{month_distance:.0f}",
                         "runs": stat['count'],
-                        "pace": stat.get('avg_pace_formatted', '0:00'),
+                        "pace": pace_formatted,
                         "prs": pr_months.get(month_key, [])
                     })
                 else:
@@ -490,31 +648,40 @@ def format_stories(wrapped, email=None):
                     "type": "monthly_grid",
                     "title": "Month by Month",
                     "emoji": "📈",
-                    "months": months_data
+                    "months": months_data,
+                    "unit": unit_label
                 })
         
         # Story 5: Fastest Pace
         if activities.get('fastest_pace'):
             fastest = activities['fastest_pace']
+            fastest_distance = convert_distance(fastest['distance_km'])
+            # Convert pace to correct unit
+            pace_min_km = fastest.get('pace_min_km', 0)
+            pace_formatted = convert_pace(pace_min_km) if pace_min_km > 0 else fastest.get('pace_formatted', '0:00')
             stories.append({
                 "type": "highlight",
                 "title": "Fastest Pace",
                 "emoji": "⚡",
-                "main_stat": fastest.get('pace_formatted', '0:00') + "/km",
+                "main_stat": pace_formatted + f"/{unit_label}",
                 "date": fastest.get('date', '').split('T')[0] if fastest.get('date') else '',
-                "secondary": f"{fastest['distance_km']:.2f} km run"
+                "secondary": f"{fastest_distance:.2f} {unit_label} run"
             })
         
         # Story 6: Averages
         if activities.get('averages'):
             avg = activities['averages']
+            avg_distance = convert_distance(avg['distance_km'])
+            # Convert pace to correct unit
+            pace_min_km = avg.get('pace_min_km', 0)
+            pace_formatted = convert_pace(pace_min_km) if pace_min_km > 0 else avg.get('pace_formatted', '0:00')
             stories.append({
                 "type": "stats",
                 "title": "Your Averages",
                 "emoji": "📊",
                 "stats": [
-                    {"label": "Distance", "value": f"{avg['distance_km']:.2f} km"},
-                    {"label": "Pace", "value": avg.get('pace_formatted', '0:00') + "/km"},
+                    {"label": "Distance", "value": f"{avg_distance:.2f} {unit_label}"},
+                    {"label": "Pace", "value": pace_formatted + f"/{unit_label}"},
                     {"label": "Duration", "value": f"{avg['duration_minutes']:.0f} min"},
                     {"label": "Heart Rate", "value": f"{avg['heart_rate_bpm']:.0f} bpm"} if avg.get('heart_rate_bpm') else None
                 ]
@@ -652,7 +819,106 @@ def format_stories(wrapped, email=None):
                 "records": pr_stats
             })
     
-    # Story 15: AI Insights (cached)
+    # Story 15: Cycling Stats (if selected)
+    print(f"DEBUG Story 15: Checking cycling story - 'cycling' in activity_types: {'cycling' in activity_types}")
+    print(f"DEBUG Story 15: cycling data exists: {wrapped.get('activities_by_type', {}).get('cycling') is not None}")
+    if 'cycling' in activity_types and wrapped.get('activities_by_type', {}).get('cycling'):
+        cycling = wrapped['activities_by_type']['cycling']
+        cycling_distance = convert_distance(cycling.get('total_distance_km', 0))
+        print(f"DEBUG Story 15: Adding cycling story with {cycling.get('total_runs', 0)} rides")
+        
+        stories.append({
+            "type": "running_summary",
+            "title": "Cycling",
+            "emoji": "⚫⚫",
+            "stats": [
+                {"label": "Total Rides", "value": cycling.get('total_runs', 0)},
+                {"label": "Distance", "value": f"{cycling_distance:.2f} {unit_label}"},
+                {"label": "Time", "value": f"{cycling.get('total_time_hours', 0):.2f} hours"},
+                {"label": "Calories", "value": f"{cycling.get('total_calories', 0):,}"}
+            ]
+        })
+        
+        # Longest ride
+        if cycling.get('longest_run'):
+            longest_ride = cycling['longest_run']
+            longest_ride_distance = convert_distance(longest_ride['distance_km'])
+            stories.append({
+                "type": "highlight",
+                "title": "Longest Ride",
+                "emoji": "⚫⚫",
+                "main_stat": f"{longest_ride_distance:.2f} {unit_label}",
+                "date": longest_ride.get('date', '').split('T')[0] if longest_ride.get('date') else '',
+                "secondary": f"{longest_ride['duration_minutes']:.0f} minutes"
+            })
+    
+    # Story 16: Swimming Stats (if selected)
+    if 'swimming' in activity_types and wrapped.get('activities_by_type', {}).get('swimming'):
+        swimming = wrapped['activities_by_type']['swimming']
+        swimming_distance = convert_distance(swimming.get('total_distance_km', 0))
+        
+        stories.append({
+            "type": "running_summary",
+            "title": "Swimming",
+            "emoji": "🏊",
+            "stats": [
+                {"label": "Total Swims", "value": swimming.get('total_runs', 0)},
+                {"label": "Distance", "value": f"{swimming_distance:.2f} {unit_label}"},
+                {"label": "Time", "value": f"{swimming.get('total_time_hours', 0):.2f} hours"},
+                {"label": "Calories", "value": f"{swimming.get('total_calories', 0):,}"}
+            ]
+        })
+        
+        # Longest swim
+        if swimming.get('longest_run'):
+            longest_swim = swimming['longest_run']
+            longest_swim_distance = convert_distance(longest_swim['distance_km'])
+            stories.append({
+                "type": "highlight",
+                "title": "Longest Swim",
+                "emoji": "🏊",
+                "main_stat": f"{longest_swim_distance:.2f} {unit_label}",
+                "date": longest_swim.get('date', '').split('T')[0] if longest_swim.get('date') else '',
+                "secondary": f"{longest_swim['duration_minutes']:.0f} minutes"
+            })
+    
+    # Story 17: Others Stats (if selected)
+    if 'others' in activity_types and wrapped.get('activities_by_type', {}).get('others'):
+        others = wrapped['activities_by_type']['others']
+        others_distance = convert_distance(others.get('total_distance_km', 0))
+        most_common = others.get('most_common_activity_type', 'Unknown')
+        
+        # Format activity type name (e.g., "hiking" -> "Hiking")
+        most_common_formatted = most_common.replace('_', ' ').title()
+        
+        stories.append({
+            "type": "running_summary",
+            "title": "Other Activities",
+            "emoji": "⋯",
+            "stats": [
+                {"label": "Total Activities", "value": others.get('total_runs', 0)},
+                {"label": "Most Common", "value": most_common_formatted},
+                {"label": "Time", "value": f"{others.get('total_time_hours', 0):.2f} hours"},
+                {"label": "Calories", "value": f"{others.get('total_calories', 0):,}"}
+            ]
+        })
+        
+        # Longest other activity (by time, not distance)
+        if others.get('longest_by_time'):
+            longest_other = others['longest_by_time']
+            activity_type = longest_other.get('activity_type', 'Unknown')
+            activity_type_formatted = activity_type.replace('_', ' ').title()
+            
+            stories.append({
+                "type": "highlight",
+                "title": "Longest Activity",
+                "emoji": "⋯",
+                "main_stat": f"{longest_other['duration_minutes']:.0f} min",
+                "date": longest_other.get('date', '').split('T')[0] if longest_other.get('date') else '',
+                "secondary": activity_type_formatted
+            })
+    
+    # AI Insights (cached)
     # Check if we have cached insights for this user
     cached_insights = None
     if email:
@@ -675,7 +941,7 @@ def format_stories(wrapped, email=None):
         "text": ai_insights
     })
     
-    # Story 16: AI Forecast for Next Year
+    # AI Forecast for Next Year
     stories.append({
         "type": "ai_text",
         "title": "2026 Goals",
@@ -683,18 +949,42 @@ def format_stories(wrapped, email=None):
         "text": ai_forecast
     })
     
-    # Story 17: Final Summary
+    # Final Story: Summary
     activities = wrapped.get("activities", {})
     sleep = wrapped.get("sleep", {})
+    
+    # Build summary based on activity types
+    summary_items = []
+    
+    # Add running stats
+    if activities.get('total_distance_km', 0) > 0:
+        run_distance = convert_distance(activities.get('total_distance_km', 0))
+        summary_items.append(f"{run_distance:.0f} {unit_label} run")
+        summary_items.append(f"{activities.get('total_runs', 0)} runs completed")
+    
+    # Add cycling stats if selected
+    if 'cycling' in activity_types and wrapped.get('activities_by_type', {}).get('cycling'):
+        cycling = wrapped['activities_by_type']['cycling']
+        cycling_distance = convert_distance(cycling.get('total_distance_km', 0))
+        if cycling_distance > 0:
+            summary_items.append(f"{cycling_distance:.0f} {unit_label} cycled")
+    
+    # Add swimming stats if selected
+    if 'swimming' in activity_types and wrapped.get('activities_by_type', {}).get('swimming'):
+        swimming = wrapped['activities_by_type']['swimming']
+        swimming_distance = convert_distance(swimming.get('total_distance_km', 0))
+        if swimming_distance > 0:
+            summary_items.append(f"{swimming_distance:.0f} {unit_label} swam")
+    
+    # Add sleep
+    if sleep.get('total_sleep_hours', 0) > 0:
+        summary_items.append(f"{sleep.get('total_sleep_hours', 0):.0f} hours slept")
+    
     stories.append({
         "type": "summary",
         "title": "That's a Wrap!",
         "emoji": "🎊",
-        "summary": [
-            f"{activities.get('total_distance_km', 0):.0f} km run",
-            f"{sleep.get('total_sleep_hours', 0):.0f} hours slept",
-            f"{activities.get('total_runs', 0)} runs completed"
-        ]
+        "summary": summary_items[:5]  # Limit to 5 items to avoid overcrowding
     })
     
     return stories

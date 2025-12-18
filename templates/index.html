@@ -9,14 +9,393 @@
         let pauseStartTime = null;
         let remainingTime = 10000;
         let isNavigating = false;  // Prevent duplicate navigation events
+        
+        // User preferences
+        let userPreferences = {
+            unit: 'km',
+            activities: ['running']
+        };
+        
+        // Unit selection handler
+        function selectUnit(unit) {
+            userPreferences.unit = unit;
+            localStorage.setItem('preferredUnit', unit);
+            
+            // Update UI
+            document.querySelectorAll('.unit-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.unit === unit) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+        
+        // Activity toggle handler
+        function toggleActivity(activity, checked) {
+            if (checked) {
+                if (!userPreferences.activities.includes(activity)) {
+                    userPreferences.activities.push(activity);
+                }
+            } else {
+                userPreferences.activities = userPreferences.activities.filter(a => a !== activity);
+            }
+            localStorage.setItem('selectedActivities', JSON.stringify(userPreferences.activities));
+        }
+        
+        // Load preferences from localStorage
+        function loadPreferences() {
+            const savedUnit = localStorage.getItem('preferredUnit');
+            // Default to 'km' if no preference saved or invalid value
+            if (savedUnit && (savedUnit === 'km' || savedUnit === 'miles')) {
+                userPreferences.unit = savedUnit;
+            } else {
+                // No saved preference or invalid value - default to km
+                userPreferences.unit = 'km';
+                localStorage.setItem('preferredUnit', 'km');
+            }
+            
+            // Update button UI to match preference
+            document.querySelectorAll('.unit-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.unit === userPreferences.unit) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            const savedActivities = localStorage.getItem('selectedActivities');
+            if (savedActivities) {
+                userPreferences.activities = JSON.parse(savedActivities);
+            }
+        }
+        
+        // Convert distance based on user preference
+        function convertDistance(km) {
+            if (userPreferences.unit === 'miles') {
+                return (km * 0.621371).toFixed(2);
+            }
+            return km.toFixed(2);
+        }
+        
+        // Get unit label
+        function getUnitLabel() {
+            return userPreferences.unit === 'miles' ? 'mi' : 'km';
+        }
+        
+        // Start showing stories based on user preferences
+        async function startWrapped() {
+            console.log('=== START WRAPPED BUTTON CLICKED ===');
+            console.log('User preferences:', userPreferences);
+            
+            if (!allWrappedData) {
+                console.error('No data available!');
+                alert('Data not loaded. Please refresh the page.');
+                return;
+            }
+            
+            const welcomeScreen = document.getElementById('welcome-screen');
+            const loadingScreen = document.getElementById('loading-screen');
+            
+            // Hide welcome screen
+            if (welcomeScreen) {
+                welcomeScreen.classList.remove('active');
+                console.log('Welcome screen hidden');
+            }
+            
+            // Show loading briefly while we regenerate stories with correct unit
+            if (loadingScreen) {
+                loadingScreen.classList.add('active');
+                document.getElementById('loading-message').textContent = 'Preparing your stories...';
+            }
+            
+            // Debug: Log what we're about to send
+            console.log('=== START WRAPPED DEBUG ===');
+            console.log('localStorage preferredUnit:', localStorage.getItem('preferredUnit'));
+            console.log('localStorage selectedActivities:', localStorage.getItem('selectedActivities'));
+            console.log('userPreferences.unit:', userPreferences.unit);
+            console.log('userPreferences.activities:', userPreferences.activities);
+            console.log('Button states:');
+            console.log('  km active:', document.querySelector('.unit-btn[data-unit="km"]')?.classList.contains('active'));
+            console.log('  miles active:', document.querySelector('.unit-btn[data-unit="miles"]')?.classList.contains('active'));
+            console.log('Checkbox states:');
+            console.log('  cycling:', document.getElementById('activity-cycling')?.checked);
+            console.log('  swimming:', document.getElementById('activity-swimming')?.checked);
+            console.log('  others:', document.getElementById('activity-others')?.checked);
+            
+            // Regenerate stories with user's selected unit
+            try {
+                const params = new URLSearchParams({
+                    unit: userPreferences.unit,
+                    activities: JSON.stringify(userPreferences.activities)
+                });
+                
+                console.log('Sending to backend:', params.toString());
+                
+                const response = await fetch(`/api/format-stories?${params.toString()}`);
+                const data = await response.json();
+                
+                if (loadingScreen) {
+                    loadingScreen.classList.remove('active');
+                }
+                
+                // Filter stories based on preferences
+                console.log('Filtering stories for:', userPreferences.activities);
+                const allStories = data.stories;
+                console.log('Total stories before filtering:', allStories.length);
+            
+            // Filter out cycling/swimming stories if not selected
+            stories = allStories.filter(story => {
+                // Keep all non-cycling/swimming stories
+                if (!story.title) return true;
+                
+                const title = story.title.toLowerCase();
+                
+                // Filter cycling stories
+                if (title.includes('cycling') || title.includes('ride')) {
+                    const includeCycling = userPreferences.activities.includes('cycling');
+                    console.log(`Cycling story "${story.title}" - included: ${includeCycling}`);
+                    return includeCycling;
+                }
+                
+                // Filter swimming stories
+                if (title.includes('swimming') || title.includes('swim')) {
+                    const includeSwimming = userPreferences.activities.includes('swimming');
+                    console.log(`Swimming story "${story.title}" - included: ${includeSwimming}`);
+                    return includeSwimming;
+                }
+                
+                // Filter others stories
+                if (title.includes('other')) {
+                    const includeOthers = userPreferences.activities.includes('others');
+                    console.log(`Others story "${story.title}" - included: ${includeOthers}`);
+                    return includeOthers;
+                }
+                
+                // Keep all other stories
+                return true;
+            });
+            
+            console.log('Total stories after filtering:', stories.length);
+            
+            // Reset story index
+            currentIndex = 0;
+            
+            // Render and show stories
+            renderStories();
+            showStory(0);
+            
+            } catch (error) {
+                console.error('Error formatting stories:', error);
+                if (loadingScreen) {
+                    loadingScreen.classList.remove('active');
+                }
+                alert('Failed to generate stories. Please try again.');
+            }
+        }
+        
+        // Global variable to store all generated data
+        let allWrappedData = null;
+        
+        // Load initial data (generate everything with all activity types)
+        async function loadInitialData() {
+            try {
+                console.log('=== LOADING INITIAL DATA ===');
+                
+                // Build query parameters - fetch ALL activity types
+                const params = new URLSearchParams({
+                    unit: 'km',  // Default unit, will be converted later
+                    activities: JSON.stringify(['running', 'cycling', 'swimming', 'others'])
+                });
+                
+                // Create EventSource for Server-Sent Events
+                const eventSource = new EventSource(`/api/generate-wrapped?${params.toString()}`);
+                
+                eventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('Received:', data);
+                        
+                        if (data.type === 'progress') {
+                            // Update loading message in real-time
+                            const loadingMessage = document.getElementById('loading-message');
+                            if (loadingMessage) {
+                                loadingMessage.textContent = data.message;
+                            }
+                        } else if (data.type === 'complete') {
+                            // Data loading complete
+                            console.log('Data generation complete');
+                            allWrappedData = data;
+                            
+                            // Close the connection
+                            eventSource.close();
+                            
+                            // Now check what activities are available and show welcome screen
+                            showWelcomeScreen();
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
+                        }
+                    } catch (parseError) {
+                        console.error('Error parsing event data:', parseError);
+                    }
+                };
+                
+                eventSource.onerror = function(error) {
+                    console.error('EventSource error:', error);
+                    eventSource.close();
+                    
+                    document.getElementById('loading-screen').innerHTML = `
+                        <div class="error-message">
+                            Failed to load your Wrapped data.<br>
+                            Please check your connection and try again.
+                        </div>
+                    `;
+                };
+                
+            } catch (error) {
+                console.error('Error loading initial data:', error);
+            }
+        }
+        
+        // Show welcome screen after data is loaded
+        function showWelcomeScreen() {
+            console.log('=== SHOWING WELCOME SCREEN ===');
+            console.log('All wrapped data:', allWrappedData);
+            
+            // Check what activities are available from the generated data
+            const wrappedData = allWrappedData.wrapped_data || {};
+            console.log('Wrapped data:', wrappedData);
+            
+            const activitiesByType = wrappedData.activities_by_type || {};
+            console.log('Activities by type:', activitiesByType);
+            console.log('Activities by type keys:', Object.keys(activitiesByType));
+            
+            // Disable checkboxes for activities with no data
+            const cyclingCheckbox = document.getElementById('activity-cycling');
+            const swimmingCheckbox = document.getElementById('activity-swimming');
+            const othersCheckbox = document.getElementById('activity-others');
+            
+            if (cyclingCheckbox) {
+                const hasCycling = activitiesByType.cycling && activitiesByType.cycling.total_runs > 0;
+                if (!hasCycling) {
+                    console.log('Disabling cycling checkbox - no activities');
+                    cyclingCheckbox.disabled = true;
+                    cyclingCheckbox.checked = false;
+                    const label = cyclingCheckbox.closest('.checkbox-label');
+                    if (label) {
+                        label.style.opacity = '0.5';
+                        label.style.cursor = 'not-allowed';
+                        label.title = 'No cycling activities found in 2025';
+                    }
+                    userPreferences.activities = userPreferences.activities.filter(a => a !== 'cycling');
+                } else {
+                    console.log(`Cycling available: ${activitiesByType.cycling.total_runs} activities`);
+                    // Check if user has a saved preference, otherwise default to checked
+                    const savedActivities = localStorage.getItem('selectedActivities');
+                    if (savedActivities) {
+                        cyclingCheckbox.checked = userPreferences.activities.includes('cycling');
+                    } else {
+                        // Default to checked for first time users
+                        cyclingCheckbox.checked = true;
+                        if (!userPreferences.activities.includes('cycling')) {
+                            userPreferences.activities.push('cycling');
+                        }
+                    }
+                }
+            }
+            
+            if (swimmingCheckbox) {
+                const hasSwimming = activitiesByType.swimming && activitiesByType.swimming.total_runs > 0;
+                if (!hasSwimming) {
+                    console.log('Disabling swimming checkbox - no activities');
+                    swimmingCheckbox.disabled = true;
+                    swimmingCheckbox.checked = false;
+                    const label = swimmingCheckbox.closest('.checkbox-label');
+                    if (label) {
+                        label.style.opacity = '0.5';
+                        label.style.cursor = 'not-allowed';
+                        label.title = 'No swimming activities found in 2025';
+                    }
+                    userPreferences.activities = userPreferences.activities.filter(a => a !== 'swimming');
+                } else {
+                    console.log(`Swimming available: ${activitiesByType.swimming.total_runs} activities`);
+                    // Check if user has a saved preference, otherwise default to checked
+                    const savedActivities = localStorage.getItem('selectedActivities');
+                    if (savedActivities) {
+                        swimmingCheckbox.checked = userPreferences.activities.includes('swimming');
+                    } else {
+                        // Default to checked for first time users
+                        swimmingCheckbox.checked = true;
+                        if (!userPreferences.activities.includes('swimming')) {
+                            userPreferences.activities.push('swimming');
+                        }
+                    }
+                }
+            }
+            
+            if (othersCheckbox) {
+                const hasOthers = activitiesByType.others && activitiesByType.others.total_runs > 0;
+                if (!hasOthers) {
+                    console.log('Disabling others checkbox - no activities');
+                    othersCheckbox.disabled = true;
+                    othersCheckbox.checked = false;
+                    const label = othersCheckbox.closest('.checkbox-label');
+                    if (label) {
+                        label.style.opacity = '0.5';
+                        label.style.cursor = 'not-allowed';
+                        label.title = 'No other activities found in 2025';
+                    }
+                    userPreferences.activities = userPreferences.activities.filter(a => a !== 'others');
+                } else {
+                    console.log(`Others available: ${activitiesByType.others.total_runs} activities`);
+                    // Check if user has a saved preference, otherwise default to checked
+                    const savedActivities = localStorage.getItem('selectedActivities');
+                    if (savedActivities) {
+                        othersCheckbox.checked = userPreferences.activities.includes('others');
+                    } else {
+                        // Default to checked for first time users
+                        othersCheckbox.checked = true;
+                        if (!userPreferences.activities.includes('others')) {
+                            userPreferences.activities.push('others');
+                        }
+                    }
+                }
+            }
+            
+            // Ensure unit button UI matches userPreferences
+            console.log('Setting unit button UI to:', userPreferences.unit);
+            document.querySelectorAll('.unit-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.unit === userPreferences.unit) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            // Hide loading screen and show welcome screen
+            console.log('Showing welcome screen');
+            const loadingScreen = document.getElementById('loading-screen');
+            const welcomeScreen = document.getElementById('welcome-screen');
+            
+            if (loadingScreen) {
+                loadingScreen.classList.remove('active');
+            }
+            if (welcomeScreen) {
+                welcomeScreen.classList.add('active');
+            }
+        }
 
         // Load wrapped data with real-time progress updates via Server-Sent Events
         async function loadWrappedData() {
             try {
                 console.log('Starting to fetch wrapped data...');
+                console.log('User preferences:', userPreferences);
+                
+                // Build query parameters with preferences
+                const params = new URLSearchParams({
+                    unit: userPreferences.unit,
+                    activities: JSON.stringify(userPreferences.activities)
+                });
                 
                 // Create EventSource for Server-Sent Events
-                const eventSource = new EventSource('/api/generate-wrapped');
+                const eventSource = new EventSource(`/api/generate-wrapped?${params.toString()}`);
                 
                 eventSource.onmessage = function(event) {
                     try {
@@ -98,6 +477,10 @@
             console.log('Container:', container);
             console.log('Progress container:', progressContainer);
             
+            // Clear existing progress bars and stories
+            progressContainer.innerHTML = '';
+            container.innerHTML = '';
+            
             // Create progress bars
             stories.forEach((_, index) => {
                 const bar = document.createElement('div');
@@ -130,15 +513,6 @@
 
         function renderStoryContent(story) {
             switch (story.type) {
-                case 'welcome':
-                    return `
-                        <div class="story-emoji">${story.emoji}</div>
-                        <div class="story-title">${story.title}</div>
-                        <div class="story-subtitle">${story.subtitle}</div>
-                        <button class="start-wrapped-btn" onclick="startWrapped()">Start your Wrapped</button>
-                        <div class="attribution">by <a href="https://github.com/ebjaime" target="_blank" rel="noopener noreferrer">@ebjaime</a></div>
-                    `;
-                
                 case 'running_summary':
                 case 'stats':
                     return `
@@ -207,7 +581,7 @@
                                         ` : ''}
                                     </div>
                                     <div class="month-distance">${month.distance}</div>
-                                    <div class="month-label">km</div>
+                                    <div class="month-label">${story.unit || 'km'}</div>
                                     <div class="month-details">
                                         <div class="month-detail-item">
                                             <span class="detail-icon">🏃</span>
@@ -215,7 +589,7 @@
                                         </div>
                                         <div class="month-detail-item">
                                             <span class="detail-icon">⚡</span>
-                                            <span class="detail-value">${month.pace}/km</span>
+                                            <span class="detail-value">${month.pace}/${story.unit || 'km'}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -333,11 +707,6 @@
             }
         }
 
-        function startWrapped() {
-            // Start from story 1 (skip welcome)
-            nextStory();
-        }
-
         function nextStory() {
             if (currentIndex < stories.length - 1) {
                 showStory(currentIndex + 1);
@@ -353,6 +722,9 @@
 
         // Initialize event listeners after DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
+            // Load saved preferences
+            loadPreferences();
+            
             // Hold to pause functionality
             const appContainer = document.getElementById('app-container');
             let touchStartTime = 0;
@@ -370,9 +742,6 @@
             
             // If it was a quick tap (< 200ms), handle navigation
             if (touchDuration < 200 && !isNavigating) {
-                // Don't allow navigation on welcome screen
-                if (currentIndex === 0) return;
-                
                 isNavigating = true;
                 const rect = appContainer.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
@@ -408,9 +777,6 @@
             
             // If it was a quick tap (< 200ms), handle navigation
             if (touchDuration < 200 && !isNavigating) {
-                // Don't allow navigation on welcome screen
-                if (currentIndex === 0) return;
-                
                 isNavigating = true;
                 const rect = appContainer.getBoundingClientRect();
                 const containerWidth = rect.width;
@@ -432,9 +798,6 @@
             
             // Keyboard navigation
             document.addEventListener('keydown', (e) => {
-                // Don't allow keyboard navigation on welcome screen
-                if (currentIndex === 0) return;
-                
                 if (e.key === 'ArrowRight' || e.key === ' ') {
                     nextStory();
                 } else if (e.key === 'ArrowLeft') {
@@ -540,10 +903,21 @@
                     }
                 });
             }
+            
+            // Show loading screen and start data generation
+            const loadingScreen = document.getElementById('loading-screen');
+            const welcomeScreen = document.getElementById('welcome-screen');
+            
+            if (loadingScreen) {
+                loadingScreen.classList.add('active');
+            }
+            if (welcomeScreen) {
+                welcomeScreen.classList.remove('active');
+            }
+            
+            // Load initial data (will show welcome screen when done)
+            loadInitialData();
         });
-
-        // Load data on page load
-        loadWrappedData();
     </script>
 <head>
     <meta charset="UTF-8">
@@ -703,13 +1077,15 @@
         }
 
         /* Loading screen */
-        .loading {
+        .story-container.loading.active {
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             color: white;
             gap: 20px;
+            padding: 40px 30px;
+            min-height: 100vh;
         }
 
         .spinner {
@@ -793,6 +1169,25 @@
             overflow: hidden;  /* Ensure emoji doesn't show */
         }
         
+        /* Welcome screen logo should be bigger and not cropped */
+        #welcome-screen .story-emoji {
+            width: 250px;
+            height: auto;
+            overflow: visible;
+        }
+        
+        #welcome-screen .story-emoji img {
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+        }
+        
+        /* Welcome screen should have a whiter background for logo visibility */
+        #welcome-screen::before {
+            background: rgba(255, 255, 255, 0.15) !important;
+            backdrop-filter: blur(20px) brightness(1.3) !important;
+        }
+        
         /* Hide any emoji content */
         .story-emoji::first-letter {
             font-size: 0;
@@ -865,6 +1260,31 @@
             height: 40px;
             background: linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%);
             clip-path: polygon(65% 0%, 85% 40%, 55% 40%, 75% 100%, 25% 55%, 50% 55%, 35% 0%);
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Longest Ride - Two circles (bicycle wheels) */
+        .story-container[data-title="longest-ride"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 50px;
+            height: 20px;
+            background: 
+                radial-gradient(circle, transparent 30%, #ffffff 30%, #ffffff 45%, transparent 45%) 0% 50% / 40% 100% no-repeat,
+                radial-gradient(circle, transparent 30%, #ffffff 30%, #ffffff 45%, transparent 45%) 60% 50% / 40% 100% no-repeat;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
+        }
+
+        /* Longest Activity - Three dots */
+        .story-container[data-title="longest-activity"] .story-emoji::after {
+            content: '';
+            position: absolute;
+            width: 45px;
+            height: 12px;
+            background: 
+                radial-gradient(circle, #ffffff 45%, transparent 45%) 10% 50% / 25% 100% no-repeat,
+                radial-gradient(circle, #ffffff 45%, transparent 45%) 50% 50% / 25% 100% no-repeat,
+                radial-gradient(circle, #ffffff 45%, transparent 45%) 90% 50% / 25% 100% no-repeat;
             filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
         }
 
@@ -1190,6 +1610,196 @@
                     0 4px 25px rgba(0, 119, 190, 0.7),
                     inset 0 1px 0 rgba(255, 255, 255, 0.3);
             }
+        }
+
+        /* Preferences Container */
+        .preferences-container {
+            width: 90%;
+            max-width: 400px;
+            margin: 30px auto 20px;
+            animation: fadeInUp 0.6s ease-out 0.3s backwards;
+        }
+
+        .preference-section {
+            margin-bottom: 25px;
+        }
+
+        .preference-label {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.7);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+
+        /* Unit Toggle */
+        .unit-toggle {
+            display: flex;
+            gap: 0;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 50px;
+            padding: 4px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .unit-btn {
+            flex: 1;
+            padding: 12px 20px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 15px;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.6);
+            background: transparent;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            z-index: 1;
+            transform: scale(1);
+        }
+
+        .unit-btn.active {
+            color: #ffffff;
+            background: linear-gradient(135deg, #0077be 0%, #005a92 100%);
+            box-shadow: 0 2px 10px rgba(0, 119, 190, 0.4);
+            transform: scale(1.02);
+        }
+
+        .unit-btn:hover:not(.active) {
+            color: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Activity Checkboxes */
+        .activity-checkboxes {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 16px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 15px;
+            color: rgba(255, 255, 255, 0.9);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            padding: 8px;
+            border-radius: 8px;
+        }
+
+        .checkbox-label:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .checkbox-label input[type="checkbox"] {
+            display: none;
+        }
+
+        .checkbox-label input[type="checkbox"]:disabled ~ .checkbox-text {
+            opacity: 0.5;
+        }
+
+        .checkbox-custom {
+            width: 22px;
+            height: 22px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 6px;
+            position: relative;
+            transition: all 0.3s ease;
+            flex-shrink: 0;
+        }
+
+        .checkbox-label input[type="checkbox"]:checked ~ .checkbox-custom {
+            background: linear-gradient(135deg, #0077be 0%, #005a92 100%);
+            border-color: #0077be;
+            box-shadow: 0 0 10px rgba(0, 119, 190, 0.4);
+        }
+
+        .checkbox-label input[type="checkbox"]:checked ~ .checkbox-custom::after {
+            content: '';
+            position: absolute;
+            left: 6px;
+            top: 2px;
+            width: 6px;
+            height: 11px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        .checkbox-label input[type="checkbox"]:disabled ~ .checkbox-custom {
+            opacity: 0.5;
+            cursor: not-allowed;
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+        
+        .checkbox-label input[type="checkbox"]:disabled ~ .checkbox-text {
+            cursor: not-allowed;
+        }
+        
+        .checkbox-label:has(input[type="checkbox"]:disabled) {
+            cursor: not-allowed !important;
+        }
+
+        .checkbox-text {
+            flex: 1;
+            user-select: none;
+        }
+
+        /* Start Wrapped Button */
+        .start-wrapped-btn {
+            width: 100%;
+            padding: 18px 32px;
+            margin-top: 24px;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 18px;
+            font-weight: 600;
+            color: #ffffff;
+            background: linear-gradient(135deg, #0077be 0%, #005a92 100%);
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 20px rgba(0, 119, 190, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .start-wrapped-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s ease;
+        }
+
+        .start-wrapped-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(0, 119, 190, 0.5);
+        }
+
+        .start-wrapped-btn:hover::before {
+            left: 100%;
+        }
+
+        .start-wrapped-btn:active {
+            transform: translateY(0);
         }
 
         .stat-item {
@@ -1692,10 +2302,44 @@
                 font-size: 22px !important;
             }
 
+            .preferences-container {
+                width: 95% !important;
+                margin: 20px auto 15px !important;
+            }
+
+            .preference-section {
+                margin-bottom: 18px !important;
+            }
+
+            .preference-label {
+                font-size: 12px !important;
+                margin-bottom: 10px !important;
+            }
+
+            .unit-btn {
+                padding: 10px 16px !important;
+                font-size: 14px !important;
+            }
+
+            .activity-checkboxes {
+                padding: 12px !important;
+                gap: 10px !important;
+            }
+
+            .checkbox-label {
+                font-size: 14px !important;
+                padding: 6px !important;
+            }
+
+            .checkbox-custom {
+                width: 20px !important;
+                height: 20px !important;
+            }
+
             .start-wrapped-btn {
                 padding: 14px 35px !important;
                 font-size: 16px !important;
-                margin-top: 25px !important;
+                margin-top: 20px !important;
             }
 
             .attribution {
@@ -1842,8 +2486,61 @@
         <!-- Progress bars -->
         <div class="progress-container" id="progress-container"></div>
 
-        <!-- Loading screen -->
-        <div class="story-container active loading" id="loading-screen">
+        <!-- Welcome/Preferences screen -->
+        <div class="story-container" id="welcome-screen">
+            <div class="story-emoji">
+                <img src="{{ url_for('static', filename='logo_big.png') }}" alt="Garmin Unlocked" style="max-width: 200px; height: auto;">
+            </div>
+            <div class="story-title">Your 2025</div>
+            <div class="story-subtitle">Garmin Wrapped</div>
+            
+            <div class="preferences-container">
+                <div class="preference-section">
+                    <div class="preference-label">Distance Unit</div>
+                    <div class="unit-toggle">
+                        <button class="unit-btn active" data-unit="km" onclick="selectUnit('km')">
+                            Kilometers
+                        </button>
+                        <button class="unit-btn" data-unit="miles" onclick="selectUnit('miles')">
+                            Miles
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="preference-section">
+                    <div class="preference-label">Activities to Include</div>
+                    <div class="activity-checkboxes">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="activity-running" checked disabled>
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Running (Required)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="activity-cycling" onchange="toggleActivity('cycling', this.checked)">
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Cycling</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="activity-swimming" onchange="toggleActivity('swimming', this.checked)">
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Swimming</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="activity-others" onchange="toggleActivity('others', this.checked)">
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-text">Others</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <button class="start-wrapped-btn" onclick="startWrapped()">
+                    Start My Wrapped
+                </button>
+            </div>
+        </div>
+
+        <!-- Loading screen (hidden initially) -->
+        <div class="story-container loading" id="loading-screen">
             <div class="spinner"></div>
             <div id="loading-message" style="color: white; font-size: 20px; text-align: center; padding: 0 20px;">Connecting to Garmin...</div>
         </div>
